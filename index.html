@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Lawn Area Estimator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@2.1.0/dist/deeplab.min.js"></script>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #camera,
+    #segmentationCanvas,
+    #map {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
+    }
+
+    #camera {
+      z-index: 0;
+    }
+
+    #segmentationCanvas {
+      z-index: 0.5;
+      pointer-events: none;
+    }
+
+    #map {
+      z-index: 1;
+      background: transparent;
+    }
+
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+    }
+  </style>
+</head>
+
+<body>
+
+  <video id="camera" autoplay playsinline muted></video>
+  <canvas id="segmentationCanvas"></canvas>
+  <div id="map"></div>
+  <div id="controls">
+    <button onclick="startTracking()">Start Tracking</button>
+    <button onclick="stopTracking()">Stop & Calculate Area</button>
+    <button onclick="exportPath()">Export Path</button>
+    <div id="areaDisplay">Area: 0 m²</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    let map = L.map('map').setView([0, 0], 18);
+    let path = [];
+    let polyline = null;
+    let watchId = null;
+    let grassPoints = [];
+    let deeplabModel = null;
+    const video = document.getElementById("camera");
+    const canvas = document.getElementById("segmentationCanvas");
+    const ctx = canvas.getContext("2d");
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: 'Map data © OpenStreetMap contributors'
+    }).addTo(map);
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          loadSegmentationModel();
+        };
+      } catch (err) {
+        alert("Camera access denied or not available.");
+        console.error(err);
+      }
+    }
+
+    async function loadSegmentationModel() {
+      deeplabModel = await deeplab.load({ base: "pascal", quantizationBytes: 2 });
+      console.log("DeepLab model loaded.");
+      runSegmentationLoop();
+    }
+
+    function startTracking() {
+      path = [];
+      grassPoints = [];
+      if (polyline) {
+        map.removeLayer(polyline);
+        polyline = null;
+      }
+
+      watchId = navigator.geolocation.watchPosition(pos => {
+        const latlng = [pos.coords.latitude, pos.coords.longitude];
+        path.push(latlng);
+        map.setView(latlng, 18);
+        if (polyline) {
+          polyline.setLatLngs(path);
+        } else {
+          polyline = L.polyline(path, { color: 'blue' }).addTo(map);
+        }
+      }, err => {
+        console.error(err);
+        alert('Error getting position');
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: 1000
+      });
+    }
+
+    function stopTracking() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (path.length < 3) {
+        alert("Need at least 3 points to calculate area.");
+        return;
+      }
+      const polygon = L.polygon(path, { color: 'green', fillOpacity: 0.3 }).addTo(map);
+      const area = calculateArea(path);
+      document.getElementById('areaDisplay').innerText = `Area: ${area.toFixed(2)} m²`;
+    }
+
+    function calculateArea(coords) {
+      const R = 6371000;
+      const toRad = deg => deg * Math.PI / 180;
+      const projected = coords.map(([lat, lon]) => [
+        R * toRad(lon) * Math.cos(toRad(lat)),
+        R * toRad(lat)
+      ]);
+      let area = 0;
+      for (let i = 0; i < projected.length; i++) {
+        const [x1, y1] = projected[i];
+        const [x2, y2] = projected[(i + 1) % projected.length];
+        area += (x1 * y2 - x2 * y1);
+      }
+      return Math.abs(area / 2);
+    }
+
+    function distance([lat1, lon1], [lat2, lon2]) {
+      const R = 6371000;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * Math.PI / 180) *
+        Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    async function runSegmentationLoop() {
+      if (!video.videoWidth || !video.videoHeight) {
+        requestAnimationFrame(runSegmentationLoop);
+        return;
+      }
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      const segmentation = await deeplabModel.segment(video);
+      const mask = segmentation.data;
+      const { width, height } = segmentation;
+
+      let grassCount = 0;
+      const centerRegionSize = 20;
+      for (let y = height / 2 - centerRegionSize; y < height / 2 + centerRegionSize; y++) {
+        for (let x = width / 2 - centerRegionSize; x < width / 2 + centerRegionSize; x++) {
+          const i = Math.floor(y) * width + Math.floor(x);
+          if (mask[i] === 21) grassCount++;
+        }
+      }
+
+      if (grassCount > 200) {
+        navigator.geolocation.getCurrentPosition(pos => {
+          const latlng = [pos.coords.latitude, pos.coords.longitude];
+          if (!grassPoints.length || distance(latlng, grassPoints[grassPoints.length - 1]) > 2) {
+            grassPoints.push(latlng);
+            L.circleMarker(latlng, { radius: 3, color: 'green' }).addTo(map);
+          }
+        });
+      }
+
+      drawSegmentationMask(mask, width, height);
+      requestAnimationFrame(runSegmentationLoop);
+    }
+
+    function drawSegmentationMask(mask, width, height) {
+      const imageData = ctx.createImageData(width, height);
+      const data = imageData.data;
+      for (let i = 0; i < mask.length; i++) {
+        const idx = i * 4;
+        if (mask[i] === 21) {
+          data[idx] = 0;
+          data[idx + 1] = 255;
+          data[idx + 2] = 0;
+          data[idx + 3] = 100;
+        } else {
+          data[idx + 3] = 0;
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    function exportPath() {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(grassPoints));
+      const link = document.createElement('a');
+      link.setAttribute("href", dataStr);
+      link.setAttribute("download", "lawn-path.json");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    startCamera();
+  </script>
+</body>
+
+</html>
