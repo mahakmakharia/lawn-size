@@ -81,11 +81,19 @@
   <div id="log"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@2.1.0/dist/deeplab.min.js"></script>
 
   <script>
-    window.onload = () => {
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+        document.head.appendChild(script);
+      });
+    }
+
+    window.onload = async () => {
       const logDiv = document.getElementById("log");
       function log(msg) {
         console.log(msg);
@@ -156,9 +164,16 @@
         }
       }
 
-      async function loadSegmentationModel() {
-        log("Loading DeepLab model...");
-        deeplabModel = await deeplab.load({ base: "pascal", quantizationBytes: 2 });
+      async function loadTFandDeepLab() {
+        log("Loading TensorFlow.js...");
+        await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js");
+        log("TensorFlow.js loaded.");
+        log("Loading DeepLab model library...");
+        await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@2.1.0/dist/deeplab.min.js");
+        log("DeepLab library loaded.");
+        log("Loading DeepLab model weights...");
+        console.log(deeplab)
+        deeplabModel = await window.deeplab.load({ base: "pascal", quantizationBytes: 2 });
         log("DeepLab model loaded.");
       }
 
@@ -220,7 +235,6 @@
           log("Segmentation error: " + e.message);
         }
 
-        // Limit segmentation frequency (~2fps)
         setTimeout(() => {
           requestAnimationFrame(runSegmentationLoop);
         }, 500);
@@ -318,7 +332,7 @@
       startButton.addEventListener("click", async () => {
         try {
           await startCamera();
-          await loadSegmentationModel();
+          await loadTFandDeepLab();
           startTracking();
         } catch (e) {
           log("Failed to start: " + e.message);
