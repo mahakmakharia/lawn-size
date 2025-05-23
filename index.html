@@ -97,7 +97,7 @@
 
     async function loadModel() {
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js");
-      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@2.1.0/dist/deeplab.min.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.2/dist/deeplab.min.js");
       deeplabModel = await window.deeplab.load({ base: "pascal", quantizationBytes: 2 });
     }
 
